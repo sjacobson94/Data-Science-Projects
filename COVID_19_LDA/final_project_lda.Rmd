@@ -1,0 +1,201 @@
+---
+title: "STAT 4442 Final Project"
+author: "Wayne Yandell & Sawyer Jacobson"
+date: "8/9/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+# Read the data from the csv
+
+```{r}
+library(tidyverse)
+library(tidytext)
+library(stm)
+library(knitr)
+library(stringr)
+library(magrittr)
+library(stringi)
+library(quanteda)
+library(topicmodels)
+library(wordcloud)
+# Read in the data from the csv
+covid_texts <- read.csv("data/covid_2020.csv") %>%   
+  tibble::as_tibble()                       
+
+
+load('final_project_workspace.RData')
+```
+
+# Convert to tidytext to document-frequency-matrix to document-term-matrix
+
+```{r}
+covid_2020 <- covid_2020[c('cord_uid','abstract')] %>%
+  group_by(cord_uid) %>%
+  mutate(articleID = row_number()) %>%
+  ungroup()
+
+tidy_abstracts <- covid_2020 %>%
+  unnest_tokens(word, abstract) %>%
+  anti_join(stop_words)
+
+tidy_abstracts %>%
+  count(word, sort = TRUE) %>%
+  filter(n > 8000) %>%
+  mutate(word = reorder(word,n)) %>%
+  ggplot(aes(word, n)) +
+  geom_col() +
+  xlab(NULL) +
+  coord_flip()
+
+tidy_abstracts <- tidy_abstracts %>%
+  filter(!(word %in% c('covid','coronavirus', 'cov', 'patients', 'sars', 'disease','pandemic', 'health') | str_detect(word, pattern = "\\d+")))
+
+
+tidy_abstracts
+word_counts <- tidy_abstracts %>%
+  count(cord_uid, word, sort = TRUE)
+
+abstract_dfm <- word_counts %>%
+  cast_dfm(cord_uid, word, n)
+
+word_counts
+
+abstract_dtm <- convert(abstract_dfm, to = "topicmodels")
+```
+
+# Determine the best number of latent topics
+
+```{r}
+library(ldatuning)
+result <- FindTopicsNumber(
+  abstract_dtm,
+  topics = seq(from = 2, to = 15, by = 1),
+  metrics = c("Griffiths2004", "CaoJuan2009", "Arun2010", "Deveaud2014"),
+  method = "Gibbs",
+  control = list(seed = 77),
+  verbose = TRUE
+)
+FindTopicsNumber_plot(result)
+```
+
+# Use Latent Dirichlet Allocation and output topics with indicative tokens
+
+```{r}
+lda <- LDA(abstract_dtm, k = 13)
+terms(lda, 10)
+
+lda %>% 
+  tidy() %>%
+  group_by(topic) %>%
+  top_n(10, beta) %>%
+  ungroup()  %>%
+  # arrange(topic, desc(beta)) %>% View
+  mutate(topic = paste0("Topic ", topic),
+         term = reorder_within(term, beta, topic)) %>%
+  # filter(topic %in% c("Topic 10", "Topic 17", "Topic 30", "Topic 11", 
+  #                     "Topic 20", "Topic 2")) %>%
+  ggplot(aes(term, beta, fill = as.factor(topic))) +
+  geom_col(alpha = 0.8, show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free_y") +
+  coord_flip() +
+  theme_bw() + 
+  scale_x_reordered() +
+  labs(x = NULL, y = expression(beta),
+       title = "Highest word probabilities for each topic",
+       subtitle = "Different words are associated with different topics")
+
+abstract_stm <- stm(abstract_dfm, K = 13, verbose = FALSE, init.type = "Spectral")
+td_beta <- tidy(abstract_stm)
+
+td_beta %>%
+  group_by(topic) %>%
+  top_n(10, beta) %>%
+  ungroup() %>%
+  mutate(topic = paste0("Topic ", topic),
+         term = reorder_within(term, beta, topic)) %>%
+  filter(topic %in% c("Topic 10", "Topic 17", "Topic 30", "Topic 11",
+                      "Topic 20", "Topic 2")) %>%
+  ggplot(aes(term, beta, fill = as.factor(topic))) +
+  geom_col(alpha = 0.8, show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free_y", ncol = 2) +
+  coord_flip() +
+  theme_bw() + 
+  scale_x_reordered() +
+  labs(x = NULL, y = expression(beta),
+       title = "Highest word probabilities for each topic",
+       subtitle = "Different words are associated with different topics")
+
+  # filter(topic %in% c("Topic 23", "Topic 24", "Topic 31", "Topic 9",
+  #                     "Topic 2", "Topic 13")) %>%
+
+td_gamma <- tidy(abstract_stm, matrix = "gamma",                    
+                 document_names = rownames(abstract_dfm))
+
+ggplot(td_gamma, aes(gamma, fill = as.factor(topic))) +
+  geom_histogram(alpha = 0.8, show.legend = FALSE) +
+  facet_wrap(~ topic, ncol = 3) +
+  labs(title = "Distribution of document probabilities for each topic",
+       y = "Number of articles", x = expression(gamma))
+```
+
+```{r}
+td_gamma %>%
+  ggplot(aes(gamma, fill = as.factor(topic))) + 
+  geom_density()
+
+abstract_dtm %>% 
+  tidy() %>% 
+  filter(document == "y4i0g40c") %>% 
+  arrange(desc(count)) %>% 
+  select(-document) %>% 
+  slice(1:10) %>%
+  flextable::flextable()
+
+```
+
+```{r}
+library(ggthemes)
+library(scales)
+library(ggthemes)
+
+top_terms <- td_beta %>%
+  arrange(beta) %>%
+  group_by(topic) %>%
+  top_n(7, beta) %>%
+  arrange(-beta) %>%
+  select(topic, term) %>%
+  summarise(terms = list(term)) %>%
+  mutate(terms = map(terms, paste, collapse = ", ")) %>% 
+  unnest()
+
+gamma_terms <- td_gamma %>%
+  group_by(topic) %>%
+  summarise(gamma = mean(gamma)) %>%
+  arrange(desc(gamma)) %>%
+  left_join(top_terms, by = "topic") %>%
+  mutate(topic = paste0("Topic ", topic),
+         topic = reorder(topic, gamma))
+
+gamma_terms %>%
+  top_n(20, gamma) %>%
+  ggplot(aes(topic, gamma, label = terms, fill = topic)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(hjust = 0, nudge_y = 0.0005, size = 3) +
+  coord_flip() +
+  scale_y_continuous(expand = c(0,0),
+                     limits = c(0, 0.115),
+                     labels = percent_format()) +
+  theme_tufte(ticks = FALSE) +
+  theme(plot.title = element_text(size = 16),
+        plot.subtitle = element_text(size = 13)) +
+  labs(x = NULL, y = expression(gamma),
+       title = "Top 20 topics by prevalence in the COVID-19 corpus",
+       subtitle = "With the top words that contribute to each topic")
+
+```
+

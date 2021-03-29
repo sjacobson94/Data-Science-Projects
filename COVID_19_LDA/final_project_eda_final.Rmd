@@ -1,0 +1,177 @@
+---
+title: "COMP 4442 Final Project"
+author: "Wayne Yandell & Sawyer Jacobson"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(tidytext)
+library(stm)
+library(knitr)
+library(stringr)
+library(magrittr)
+library(stringi)
+library(quanteda)
+library(topicmodels)
+library(wordcloud)
+# Read in the data from the csv
+covid_2020 <- read.csv("data/covid_2020.csv") %>%   
+  tibble::as_tibble() %>%
+  mutate(
+    publish_month_num = as.numeric(str_sub(publish_time, 7, 7))
+  ) %>%
+  left_join(
+    data.frame(publish_month_num = c(NA, 1:12), publish_month = c(NA_character_, month.abb)),
+    by = 'publish_month_num'
+  ) %>%
+  filter(publish_month_num <= 8 | is.na(publish_month_num)) %>%
+  dplyr::select(-publish_month_num) %>%
+  mutate(
+    publish_month = if_else(is.na(publish_month), "Not Reported", publish_month) %>% factor(levels = c("Not Reported", month.abb))
+    ) %>%
+  filter(abstract_words <= 600)
+
+
+```
+
+
+```{r}
+
+# Filter to abstracts with at least 30 words because any less than that is just nonsensical and probably a bs article
+covid_2020 %>%
+  filter(abstract_words >= 30) %>%
+  # right_join(
+  #   covid_2020 %>%
+  #     group_by(source_x) %>%
+  #     dplyr::count(sort = TRUE) %>%
+  #     ungroup() %>%
+  #     slice(1:12), 
+  #   by = 'source_x'
+  # ) %>%
+  ggplot(aes(x = abstract_words, fill = publish_month)) +
+  geom_histogram(bins = 60) + 
+  labs(x = "Number of words in abstract", y = "Count", fill = "Published Month", 
+       title = "Number of words per abstract by month published") + 
+  theme_bw() + 
+  theme(
+    plot.title = element_text(hjust = 0.5)
+  )
+```
+
+
+# EDA {.tabset .tabset-pills}
+
+
+```{r}
+covid_2020_short <- covid_2020 %>%
+  dplyr::select(cord_uid, abstract, publish_month) %>%
+  group_by(cord_uid) %>%
+  mutate(articleID = row_number()) %>%
+  ungroup()
+
+tidy_abstracts <- covid_2020_short %>%
+  unnest_tokens(word, abstract) %>%
+  anti_join(stop_words, 
+            by = 'word')
+
+
+```
+
+## All Words
+
+```{r}
+tidy_abstracts %>%
+  filter(!str_detect(word, pattern = "\\d+")) %>%
+  count(word, sort = TRUE, ) %>%
+  slice(1:100) %$%
+  wordcloud(word, n, colors = brewer.pal(8, "Dark2"))
+```
+
+```{r, fig.height = 8}
+tidy_abstracts %>%
+  filter(!str_detect(word, pattern = "\\d+")) %>%
+  group_by(publish_month) %>%
+  filter(publish_month != "Jan") %>%
+  count(word, sort = TRUE) %>%
+  slice(1:6) %>%
+  # filter(n > 3000) %>%
+  mutate(word = reorder(word,n)) %>%
+  ggplot(aes(word, n, fill = publish_month)) +
+  geom_col() +
+  xlab(NULL) +
+  ylab("Count") + 
+  coord_flip() + 
+  theme_bw()  + 
+  ggtitle("Plot of 6 highest occurring words by month in the corpus") + 
+  labs(fill = "Published Month") +
+  facet_wrap(~ publish_month, ncol = 2, scales = "free_x")
+
+```
+
+
+## Highest frequency words removed
+
+
+```{r}
+
+tidy_abstracts %>%
+  filter(!(word %in% c('covid','coronavirus', 'cov', 'patients', 'sars', 'disease','pandemic', 'health') | str_detect(word, pattern = "\\d+"))) %>%
+  count(word, sort = TRUE) %>%
+  slice(1:75) %$%
+  wordcloud(word, n, colors = brewer.pal(8, "Dark2"), scale = c(2, .25))
+```
+
+```{r, fig.height = 8}
+tidy_abstracts %>%
+  filter(!(word %in% c('covid','coronavirus', 'cov', 'patients', 'sars', 'disease','pandemic', 'health') | str_detect(word, pattern = "\\d+"))) %>%
+  group_by(publish_month) %>%
+  filter(publish_month != "Jan") %>%
+  count(word, sort = TRUE) %>%
+  slice(1:6) %>%
+  # filter(n > 750) %>%
+  mutate(word = reorder(word,n)) %>%
+  ggplot(aes(word, n, fill = publish_month)) +
+  geom_col() +
+  xlab(NULL) +
+  ylab("Count") + 
+  coord_flip() + 
+  theme_bw()  + 
+  ggtitle("Plot of 6 highest occurring words by month in the corpus") + 
+  labs(fill = "Published Month") +
+  facet_wrap(~ publish_month, ncol = 2, scales = "free_x")
+
+```
+
+```{r, eval = FALSE}
+
+tidy_abstracts %>%
+  filter(!(word %in% c('covid','coronavirus', 'cov', 'patients', 'sars', 'disease','pandemic', 'health') | str_detect(word, pattern = "\\d+"))) %>%
+  group_by(publish_month) %>%
+  filter(publish_month != "Not Reported") %>%
+  count(word, sort = TRUE) %>%
+  filter(n > 750) %>%
+  mutate(word = reorder(word,n)) %>%
+  ggplot(aes(word, n, fill = publish_month)) +
+  geom_col() +
+  xlab(NULL) +
+  ylab("Count") + 
+  coord_flip() + 
+  theme_bw()  + 
+  ggtitle("Plot of highest occurring words in the corpus") + 
+  labs(fill = "Published Month")
+
+```
+
+
+
+
+

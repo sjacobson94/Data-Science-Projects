@@ -1,0 +1,405 @@
+---
+title: "NHL Player Analysis"
+author: "Sawyer Jacobson"
+date: "3/13/2020"
+fontsize: 11pt
+sansfont: Arial
+header-includes:
+  - \usepackage{setspace}\doublespace
+  - \usepackage{graphicx}
+  - \usepackage{float}
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.show = "asis", fig.pos = "H")
+library(tidyverse)
+library(knitr)
+library(ggplot2)
+library(arsenal)
+library(caret)
+library(tidymodels)
+library(gridExtra)
+library(ggpubr)
+library(vip)
+library(gridExtra)
+```
+
+
+```{r}
+#loading player data
+player.df <- read.csv("data/Player_stats.csv", stringsAsFactors = FALSE)
+#loading salary data
+salary <- read.csv("data/NHL_salary.csv", stringsAsFactors = FALSE)
+#loading hit data
+hits <- read.csv("data/Player_hits.csv", stringsAsFactors = FALSE)
+hits <- hits %>%
+  rename(Player = playerName) 
+
+salary <- salary %>%
+  mutate(Salary = str_remove_all(salary$Salary, ","),
+         Cap.Hit = str_remove_all(salary$Cap.Hit, ",")) %>%
+  mutate(Salary = as.numeric(Salary)/1000000,
+         Cap.Hit = as.numeric(Cap.Hit)
+         ) 
+
+#removing unnecessary columns from player data
+player.df <- player.df %>%
+  rename(Player = playerName) %>%
+  separate(col = playerBirthDate, into = c("playerBirthYear", "birthmonth", "birthday"), sep = "-") %>%
+  dplyr::select(-c(playerBirthCity, playerBirthStateProvince, playerFirstName, playerLastName,
+               	playerInHockeyHof, playerIsActive, seasonId, birthmonth, birthday,
+               	playerId, playerTeamsPlayedFor)) %>%
+  mutate(playerBirthYear = as.numeric(playerBirthYear),
+     	playerDrafted = ifelse(is.na(playerDraftOverallPickNo), 0, 1),
+     	Forward = ifelse(playerPositionCode == "D", 0, 1),
+     	LeftHand = ifelse(playerShootsCatches == "L", 1, 0)
+     	#playerHeight = playerHeight - mean(playerHeight), 
+     	#playerWeight = playerWeight - mean(playerWeight),
+     	#playerBirthYear = playerBirthYear - mean(playerBirthYear)
+     	) %>%
+  dplyr::select(-c(playerDraftYear, playerDraftOverallPickNo, 
+                   playerNationality))
+
+#Merging both player, hits, and salary data by player names and filtering to those who played more than 30 games
+player.df <- player.df %>%
+  inner_join(hits, by = "Player") %>%
+  inner_join(salary, by = "Player") %>%
+  filter(gamesPlayed > 30)
+
+#write.csv(player.df, file = "nhl_stats.csv", row.names = FALSE)
+  
+#Now we have our nice clean data set, and we can get to work!
+
+#divide dataset into training and testing sets
+n <- nrow(player.df)/2
+set.seed(1994)
+indexes <- sample(1:nrow(player.df), n, replace = FALSE)
+Train.df <- player.df[indexes, ]
+Test.df <-  player.df[-indexes, ]
+cleanplayer.df <- player.df
+
+#Creating forward and defensemen datasets that can be used in clustering, and potentially salary prediction
+forwards <- player.df %>%
+  filter(Forward == 1)
+defense <- player.df %>%
+  filter(Forward == 0)
+```
+
+
+## Introduction
+
+In the hockey world, the National Hockey League is considered the highest professional level of play. As with nearly all professional sports, players are paid ludicrous salaries for the job they perform defined by role and position on the ice. The hockey positions that we look at in this data are forwards (centers, left and right wings) and defensemen. The NHL utilizes a salary cap for teams to prevent a single team with a large budget from signing all of the best players in the league simply because they have the funding to, an issue that is seen more in professional baseball. Therefore it is essential for teams to balance out their budget to properly compensate players based on their performance while staying under the salary cap and balance pay across their roster to attract the best talent while keeping everyone happy. As data analytics in sports becomes increasingly popular and necessary, using statistical tools and tests can allow teams to better determine if players are being utilized properly and, if they are not, giving evidence as to what might be best for them to reach their potential and best benefit the team. Scouts help teams find talent, but their approach barely scrapes the surface on how players should be evaluated as they use a high level of assessment. Statistical analyses will allow for a greater understanding of players from how they play to how they should be compensated and if a player will be a good fit on their roster. 
+
+
+## The Data
+
+The data we will be using consists of all NHL player data from the 2018-2019 regular season. The data was collected from the statistics section of https://www.NHL.com by extracting the JSON file that populates the statistics table. Summary statistics for each player over the course of the 2018-19 regular season are included in the dataset. The statistics in our dataset are standard game stats such as goals, assists, points, average time on ice per game, penalty minutes, shifts per game, shots on goal, hits, etc. as well as player statistics such as birth country, height (in inches), weight (in pounds), birth year, draft status, etc. In total, the data set contains 906 observations with each observation being a player. We obtained NHL player salary data from https://www.hockey-reference.com/friv/current_nhl_salaries.cgi using the `rvest` function to get salaries for 760 players. The player data and salary datasets were inner joined by player name to obtain our final dataset with contained 642 players and 34 total variables. We continued to refine our dataset by filtering out players that played less than 30 total games during the season. This allowed us to analyze more consistent players in the league and eliminate, for example, rookies that only played a few games at the beginning or end of the season. We thought to do this when we noticed an extreme outlier in Ryan Poehling of the Montreal Canadiens. Ryan played in only the last regular season game for the Canadiens after his college season with St. Cloud State ended. The Canadiens did not make playoffs, and Ryan scored 3 goals in as many shots. While impressive, this hat trick skewed the data. The dataset was made more generalizable when outliers such as him were removed. After the data was filtered, we were left with 572 observations that was used to answer our research questions.
+
+## Research questions
+
+1. Is there a statistically significant difference in the median player cap hit for forwards and defensemen?
+
+2. Is there a linear (or nonlinear) relationship between time on ice and points per game?
+
+3. Using Random Forest, how accurately can we classify what position a player plays by demographics, including height, weight, cap hit, etc., and game performance?
+
+
+### Brief Exploratory Data Analysis
+
+```{r, fig.align="center", fig.height=4, fig.cap="Initial plots of key variables."}
+
+#<div style= "float:right;position: relative; top: -80px;">
+
+#plotting response variable
+player_hist <- player.df %>%
+  group_by(playerPositionCode) %>%
+  summarise(count = n()) %>%
+  ggplot(aes(x = playerPositionCode, y = count, fill = playerPositionCode)) + 
+  geom_col() +
+  labs(x = "Player Position", y = "Count", title = "Counts of player positions") + 
+  guides(fill = FALSE) + 
+  theme_bw() + 
+  theme(text = element_text(size = 7))
+
+player_bar <- player.df %>%
+  ggplot(aes(x = Cap.Hit, fill = playerPositionCode)) + 
+  geom_histogram(bins = 30) + 
+  scale_x_continuous(labels = scales::dollar) + 
+  theme_bw() + 
+  labs(x = "Cap Hit", y = "Frequency", title = "Cap hit colored by position") + 
+  theme(legend.position = c(.8, .7), 
+        text = element_text(size = 7), 
+        legend.key.size = unit(.25, "cm"))
+
+player_scat <- player.df %>%
+  ggplot(aes(timeOnIcePerGame, pointsPerGame, color = playerPositionCode)) + 
+  geom_point(size = .5) + 
+  theme_bw() + 
+  labs(x = "Time on ice per game (seconds)", y = 'Points per game') + 
+  theme(legend.position = c(.2, .8), 
+        text = element_text(size = 7), legend.key.size = unit(.15, "cm"))
+  
+
+grid.arrange(player_hist, player_bar, player_scat, ncol = 2)
+
+```
+
+The histogram above shows that there is a good distribution in the number of players at each position. The histogram of cap hit shows us that the Cap Hit variable has some pretty severe right skew that we will keep in mind for our analyses. Additionally, in the scatterplot of points per game and time on ice per game, we see a linear relationship. However, we can see two clusters of data with slightly different trends forming, different for forwards and defensemen. Seeing this trend, we will model the second research question separately for these two groups to avoid the issue of heteroscedasticity in linear modeling.
+
+## Analysis
+
+### Research question #1
+
+From our histogram above, we know the overall spread of cap hit is not normal, but we will check to see if this trend stands when separated into forwards and defensemen. As we can see, our data is has a good deal of right skew, so in this case, it may be better to use the Mann Whitney U test as the normality assumption of the t-Test is clearly broken.
+
+```{r, fig.align="center", fig.width=6, fig.height=3, fig.cap="Histograms of player cap hit for both forwards (left), and defensemen (right)"}
+f <- player.df %>%
+  filter(Forward == 1) %>%
+  ggplot(aes(Cap.Hit)) + 
+  geom_histogram(bins = 25, color = "firebrick2", fill = "firebrick2") + 
+  theme_bw() +
+  labs(x = "Cap Hit", y = "Frequency", title = "Histogram of cap hit for forwards") + 
+  scale_x_continuous(breaks = c(0, 5000000, 10000000), labels = scales::dollar) + 
+  theme(text = element_text(size = 7))
+
+d <- player.df %>%
+  filter(Forward == 0) %>%
+  ggplot(aes(Cap.Hit)) + 
+  geom_histogram(bins = 25, color = "forestgreen", fill = 'forestgreen') + 
+  scale_x_continuous(labels = scales::dollar) + 
+  theme_bw() + 
+  labs(x = "Cap Hit", y = "Frequency", title = "Histogram of cap hit defensemen") + 
+  theme(text = element_text(size = 7))
+
+grid.arrange(f, d, ncol = 2)
+```
+
+
+```{r}
+forwards_sal <- player.df %>%
+  filter(Forward == 1) %>% pull(Cap.Hit)
+defense_sal <- player.df %>%
+  filter(Forward == 0) %>% pull(Cap.Hit)
+
+w <- wilcox.test(forwards_sal, defense_sal)
+
+tidy(w) %>% 
+  select(-alternative) %>%
+  rename(Statistic = statistic, P.value = p.value, Method = method) %>%
+  kable(format = "markdown")
+
+#t.test(forwards_sal, defense_sal, var.equal = FALSE)
+```
+
+From the results of the Mann Whitney U test, we obtain a test statistic of `r unname(w$statistic)` and a p-value of `r round(unname(w$p.value))`. Therefore, we fail to reject the null hypothesis and conclude there is not a significant shift in the median cap hit for each position.
+
+
+```{r, eval=FALSE, fig.align="center", fig.width=6, fig.height=3, fig.cap="Histograms of player cap hit for both forwards (left), and defensemen (right)"}
+f_sh <- player.df %>%
+  filter(Forward == 1) %>%
+  ggplot(aes(shots)) + 
+  geom_histogram(bins = 25, color = "firebrick2", fill = "firebrick2") + 
+  theme_bw() +
+  labs(x = "Shots", y = "Frequency", title = "Histogram of shots for forwards") + 
+  theme(text = element_text(size = 7))
+
+d_sh <- player.df %>%
+  filter(Forward == 0) %>%
+  ggplot(aes(shots)) + 
+  geom_histogram(bins = 25, color = "forestgreen", fill = 'forestgreen') + 
+  theme_bw() + 
+  labs(x = "Shots", y = "Frequency", title = "Histogram of shots for defensemen") + 
+  theme(text = element_text(size = 7))
+
+grid.arrange(f_sh, d_sh, ncol = 2)
+```
+
+```{r, eval=FALSE, fig.align="center", fig.width=6, fig.height=3, fig.cap="Histograms of player cap hit for both forwards (left), and defensemen (right)"}
+forwards_shot <- player.df %>%
+  filter(Forward == 1) %>% pull(shots)
+defense_shot <- player.df %>%
+  filter(Forward == 0) %>% pull(shots)
+
+t.test(forwards_shot, defense_shot)
+
+```
+
+
+
+
+### Research question #2
+
+```{r, fig.align="center", fig.width=6, fig.height=3, fig.cap="Linear fits for points per game vs time on ice for both forwards (left), and defensemen (right)"}
+
+# player.df %<>%
+#   mutate(log_pts = log(pointsPerGame)) 
+# f_sh <- player.df %>%
+#   filter(Forward == 1) %>%
+#   ggplot(aes(pointsPerGame)) + 
+#   geom_histogram(bins = 25, color = "firebrick2", fill = "firebrick2") + 
+#   theme_bw() +
+#   labs(x = "Points per game", y = "Frequency", title = "Histogram of points per game for forwards") + 
+#   theme(text = element_text(size = 7))
+# 
+# d_sh <- player.df %>%
+#   filter(Forward == 0) %>%
+#   ggplot(aes(pointsPerGame)) + 
+#   geom_histogram(bins = 25, color = "forestgreen", fill = 'forestgreen') + 
+#   theme_bw() + 
+#   labs(x = "Points per game", y = "Frequency", title = "Histogram of points per game for defensemen") + 
+#   theme(text = element_text(size = 7))
+# 
+# grid.arrange(f_sh, d_sh, ncol = 2)
+
+
+forward_plot <- player.df %>%
+  filter(Forward == 1) %>%
+  ggscatter(x = "timeOnIcePerGame", y = "pointsPerGame", 
+            add = "reg.line", conf.int = TRUE, 
+            cor.coef = TRUE, cor.method = "pearson", 
+            xlab = "Time on ice per game (seconds)", 
+            ylab = "Points per game", color = "firebrick2", 
+            ggtheme = theme_bw(base_size = 7), size = .5, 
+            cor.coef.size = 3)
+
+# player.df %>%
+#   filter(Forward == 1) %>%
+#   ggplot(aes(timeOnIcePerGame, log_pts)) + 
+#   geom_point()
+lm_points <- lm(pointsPerGame ~ timeOnIcePerGame, data =  player.df %>%
+       filter(Forward == 1)) %>% summary() %>% coef()
+
+defense_plot <- player.df %>%
+  filter(Forward == 0) %>%
+  ggscatter(x = "timeOnIcePerGame", y = "pointsPerGame", 
+            add = "reg.line", conf.int = TRUE, 
+            cor.coef = TRUE, cor.method = "pearson", 
+            xlab = "Time on ice per game (seconds)", 
+            ylab = "Points per game", color = "forestgreen", 
+            ggtheme = theme_bw(base_size = 7), size = .5, 
+            cor.coef.size = 3)
+grid.arrange(forward_plot, defense_plot, ncol = 2)
+```
+
+From the scatter plots above with regression lines, confidence intervals, and p-values, we see there is a very strong positive correlation between points per game and time on ice per game for both forwards and defensemen. However, we notice there are outliers on the right side of the plots for both forwards and defensemen as well as a slight, but noticeable, nonlinear increase in points per game as time on ice increases for both groups. From these plots and regression lines, we can confirm that there is a strong positive correlation between these 2 variables, but due to the slight nonlinear trend in the points, we cannot conclude this is a strictly linear relationship. A log transformation would potentially increase our model fit. A log transformation of points per game was done in exploration, and a histogram confirms that the normality assumption is better satisfied than with the non-transformed data.
+
+
+### Research question #3
+
+
+A Random Forest model is a very popular machine learning method that deals with growing a "forest" consisting of a predetermined number of decision trees that have splits for values of each variable and outputting the mode of the classes for classification, or the mean prediction in a regression case, of the individual trees. Random Forest is very robust as it randomly selects a different subset of variables for each tree as well as bootstrap aggregating to avoid overfitting to the given training data. This method is extremely versatile and can be used in a wide variety of prediction problems. In this paper, we will use Random Forest to answer our last research question of how accurately we can classify players to their respective positions using a Random Forest model. To answer this, we will perform a 70/30 training/test split of our player data. We will train the model on the 70% and test the model performance on the 30%. The variables used in the model are goals, assists, plus inus, cap hit, shifts per game, penalty minutes, weight, height, hits, points per game, and the side the player shoots on.
+
+```{r}
+set.seed(1994)
+
+predict.df <- player.df %>%
+  select(playerPositionCode, goals, assists, plusMinus, Cap.Hit, 
+         shiftsPerGame, penaltyMinutes, playerWeight, playerHeight, 
+         hits, pointsPerGame, playerShootsCatches) %>%
+  mutate(playerPositionCode = as.factor(playerPositionCode))
+
+predict_split <- initial_split(predict.df, prop = .7)
+
+player_ranger <- rand_forest(trees = 100, mode = "classification") %>%
+  set_engine("ranger", importance = "impurity") %>%
+  fit(playerPositionCode ~ ., data = training(predict_split))
+
+player_probs <- player_ranger %>%
+  predict(testing(predict_split), type = "prob") %>%
+  bind_cols(testing(predict_split))
+
+# player_probs %>%
+  # roc_curve(playerPositionCode, .pred_C:.pred_R) %>%
+  # autoplot()
+
+```
+
+### Model Performance
+
+```{r, results='asis'}
+acc_tab <- player_ranger %>%
+  predict(testing(predict_split), type = 'prob') %>%
+  bind_cols(predict(player_ranger, testing(predict_split))) %>%
+  bind_cols(select(testing(predict_split), playerPositionCode)) %>%
+  metrics(playerPositionCode, .pred_C:.pred_R, estimate = .pred_class) %>%
+  filter(.metric != "kap" & .metric != "mn_log_loss")
+
+conf_tab <- player_ranger %>%
+  predict(testing(predict_split)) %>%
+  bind_cols(testing(predict_split)) %>%
+  select(.pred_class, playerPositionCode) %>% 
+  with(., table(.pred_class, playerPositionCode)) %>%
+  #conf_mat(playerPositionCode, .pred_class) %>% 
+  as.data.frame.matrix()
+
+#kable(list(acc_tab, conf_tab), format = "markdown")
+
+
+cat('\\begin{center}')
+# `{c c}` Creates a two column table
+# Use `{c | c}` if you'd like a line between the tables
+cat('\\begin{tabular}{ c c }')
+print(knitr::kable(acc_tab, format = 'latex'))
+# Separate the two columns with an `&`
+cat('&')
+print(knitr::kable(conf_tab, format = 'latex'))
+cat('\\end{tabular}')
+cat('\\\\Table: {Accuracy and AUC table (left) and confusion matrix (right, columns are actual).}')
+cat('\\end{center}')
+
+```
+
+
+```{r, fig.align="center", fig.width=6, fig.height=3, fig.cap="Geni variable importance for the Random Forest model."}
+vip(player_ranger, fill = "forestgreen")
+```
+
+From the confusion matrix above, our model falsely predicted the majority of left wingers as centers but faired much better predicting right wingers. However nearly half of them were classified as centers. The model does a very good job predicting centers and defensemen, and the overall model has an accuracy of `r round(as.numeric(acc_tab[1,3]), 3)` and an AUC of `r round(as.numeric(acc_tab[2,3]), 3)`. Given we have 4 positions players can be classified into and limited training data, the model does an admirable job. The variable importance plot shows which predictors have the most influence in the model predictions. We can see that shifts per game and goals are by far the most important predictors. Intuitively this makes sense because on average, defensemen play more minutes in a game which leads to more shifts, and on average forwards score more goals that defensemen.
+
+## Conclusion
+
+Altogether we were able make some interesting findings from our analyses. There is not a statistically significant difference in median cap hit between forwards and defensemen. There is a very strong positive correlation between points per game and time on ice, but this is not a perfectly linear relationship. This relationship appears to be slightly exponential in nature, and, in future analysis, this relationship would be explored using a log transformation. Finally, using a Random Forest model, we were able to predict what position a player is based on certain variables with decent accuracy. In the game of hockey, there is a lot more to the game than just numbers. There is a significant psychological aspect to the game, straight luck, injuries, etc. The insights gained from this type of analysis would be beneficial when combined with traditional methods of hockey scouting to put to the best product on the ice.
+
+
+```{r, eval=FALSE}
+set.seed(1994)
+
+predict.df <- player.df %>%
+  select(Forward, goals, assists, plusMinus, Cap.Hit, 
+         shiftsPerGame, penaltyMinutes, playerWeight, playerHeight, 
+         hits, pointsPerGame, playerShootsCatches) %>%
+  mutate(Forward = factor(Forward, levels = c(0, 1), labels = c("D", "F")))
+
+predict_split <- initial_split(predict.df, prop = .7)
+
+player_ranger <- rand_forest(trees = 100, mode = "classification") %>%
+  set_engine("ranger", importance = "impurity") %>%
+  fit(Forward ~ ., data = training(predict_split))
+
+player_probs <- player_ranger %>%
+  predict(testing(predict_split), type = "prob") %>%
+  bind_cols(testing(predict_split))
+
+player_probs %>%
+  roc_curve(Forward, .pred_F) %>%
+  autoplot()
+
+player_ranger %>%
+  predict(testing(predict_split), type = 'prob') %>%
+  bind_cols(predict(player_ranger, testing(predict_split))) %>%
+  bind_cols(select(testing(predict_split), Forward)) %>%
+  metrics(Forward, .pred_F, estimate = .pred_class) %>%
+  kable(format = "markdown")
+
+player_ranger %>%
+  predict(testing(predict_split)) %>%
+  bind_cols(testing(predict_split)) %>%
+  select(.pred_class, Forward) %>%
+  #conf_mat(Forward, .pred_class) %>%
+  with(., table(.pred_class, Forward)) %>%
+  as.data.frame.matrix() %>%
+  kable(format = "markdown")
+
+vip(player_ranger)
+```
