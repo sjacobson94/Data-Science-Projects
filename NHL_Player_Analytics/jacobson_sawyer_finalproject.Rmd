@@ -2,13 +2,13 @@
 title: "NHL Player Analysis"
 author: "Sawyer Jacobson"
 date: "3/13/2020"
-fontsize: 11pt
-sansfont: Arial
-header-includes:
-  - \usepackage{setspace}\doublespace
-  - \usepackage{graphicx}
-  - \usepackage{float}
-output: pdf_document
+# fontsize: 11pt
+# sansfont: Arial
+# header-includes:
+#   - \usepackage{setspace}\doublespace
+#   - \usepackage{graphicx}
+#   - \usepackage{float}
+output: html_document
 ---
 
 ```{r setup, include=FALSE}
@@ -336,17 +336,17 @@ conf_tab <- player_ranger %>%
 #kable(list(acc_tab, conf_tab), format = "markdown")
 
 
-cat('\\begin{center}')
+# cat('\\begin{center}')
 # `{c c}` Creates a two column table
 # Use `{c | c}` if you'd like a line between the tables
-cat('\\begin{tabular}{ c c }')
-print(knitr::kable(acc_tab, format = 'latex'))
+# cat('\\begin{tabular}{ c c }')
+print(knitr::kable(acc_tab))
 # Separate the two columns with an `&`
-cat('&')
-print(knitr::kable(conf_tab, format = 'latex'))
-cat('\\end{tabular}')
-cat('\\\\Table: {Accuracy and AUC table (left) and confusion matrix (right, columns are actual).}')
-cat('\\end{center}')
+# cat('&')
+print(knitr::kable(conf_tab))
+# cat('\\end{tabular}')
+cat('Table: Accuracy and AUC table (Top) and confusion matrix (Bottom, columns are actual).')
+# cat('\\end{center}')
 
 ```
 
