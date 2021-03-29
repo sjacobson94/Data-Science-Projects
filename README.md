@@ -13,7 +13,7 @@ Final project for Data Science Tools 2 class. The goal was to predict whether or
 
 ## COVID-19 LDA (R)
 
-Final project for Advanced Probability and Statistics class. Using COVID-19 papers obtained from [semanticscholar.org/Cord19](www.semanticscholar.org/Cord19), topic modeling was performed using Latent Dirichlet Allocation (LDA) to determine underlying topics based on the content of the abstracts.
+Final project for Advanced Probability and Statistics class. Using COVID-19 papers obtained from [semanticscholar.org/](https://www.semanticscholar.org/Cord19), topic modeling was performed using Latent Dirichlet Allocation (LDA) to determine underlying topics based on the content of the abstracts.
 
 <br>
 
