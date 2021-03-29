@@ -1,7 +1,7 @@
 # Data-Science-Projects
 
 This repository is comprised of many of the data science projects I have worked on throughout my masters program at the University of Denver. 
-Each was the final project of a class.
+Each was the final project of a class using either `R` or `Python` for data manipulation, visualization, and modeling.
 
 <br>
 
@@ -23,7 +23,7 @@ Final project for Data Science Tools 1 class. Twitter tweets and Reddit posts we
 
 <br>
 
-## NHL Player Analytics
+## NHL Player Analytics (R)
 
 Final project for Introduction to Probability and Statistics for Data Science. Using NHL player data from the 2018-2019 season, difference in cap hit between forwards and defensemen was analyzed as well as predicting player position based on player characteristics and statistics using Random Forest.
 
